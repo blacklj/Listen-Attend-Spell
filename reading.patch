@@ -1,0 +1,419 @@
+diff --git a/egs/aishell/local/aishell_data_prep.sh b/egs/aishell/local/aishell_data_prep.sh
+index 4747e4f..39bc10a 100755
+--- a/egs/aishell/local/aishell_data_prep.sh
++++ b/egs/aishell/local/aishell_data_prep.sh
+@@ -19,23 +19,26 @@ dev_dir=data/local/dev
+ test_dir=data/local/test
+ tmp_dir=data/local/tmp
+ 
++# 创建目录
+ mkdir -p $train_dir
+ mkdir -p $dev_dir
+ mkdir -p $test_dir
+ mkdir -p $tmp_dir
+ 
+-# data directory check
++# data directory check 检查语料目录是否存在
+ if [ ! -d $aishell_audio_dir ] || [ ! -f $aishell_text ]; then
+   echo "Error: $0 requires two directory arguments"
+   exit 1;
+ fi
+ 
+ # find wav audio file for train, dev and test resp.
++# 将音频文件整理成列表，并检查语料数目是否正确
+ find $aishell_audio_dir -iname "*.wav" > $tmp_dir/wav.flist
+ n=`cat $tmp_dir/wav.flist | wc -l`
+ [ $n -ne 141925 ] && \
+   echo Warning: expected 141925 data data files, found $n
+ 
++# 分别找出train dev和test三个音频列表
+ grep -i "wav/train" $tmp_dir/wav.flist > $train_dir/wav.flist || exit 1;
+ grep -i "wav/dev" $tmp_dir/wav.flist > $dev_dir/wav.flist || exit 1;
+ grep -i "wav/test" $tmp_dir/wav.flist > $test_dir/wav.flist || exit 1;
+@@ -45,9 +48,13 @@ rm -r $tmp_dir
+ # Transcriptions preparation
+ for dir in $train_dir $dev_dir $test_dir; do
+   echo Preparing $dir transcriptions
++  # 最后一列为发音文本id
+   sed -e 's/\.wav//' $dir/wav.flist | awk -F '/' '{print $NF}' > $dir/utt.list
++  # 倒数第2列为发音人
+   sed -e 's/\.wav//' $dir/wav.flist | awk -F '/' '{i=NF-1;printf("%s %s\n",$NF,$i)}' > $dir/utt2spk_all
++  # 文本id 音频路径
+   paste -d' ' $dir/utt.list $dir/wav.flist > $dir/wav.scp_all
++  # 从所有发音文本中找出对应发音文本id的文本
+   utils/filter_scp.pl -f 1 $dir/utt.list $aishell_text > $dir/transcripts.txt
+   awk '{print $1}' $dir/transcripts.txt > $dir/utt.list
+   utils/filter_scp.pl -f 1 $dir/utt.list $dir/utt2spk_all | sort -u > $dir/utt2spk
+diff --git a/egs/aishell/run.sh b/egs/aishell/run.sh
+index 3ffe3e1..7da42a9 100644
+--- a/egs/aishell/run.sh
++++ b/egs/aishell/run.sh
+@@ -1,8 +1,8 @@
+ #!/bin/bash
+ 
+ # -- IMPORTANT
+-data=/home/work_nfs/common/data # Modify to your aishell data path
+-stage=-1  # Modify to control start from witch stage
++data=/ASR_data_opensource/aishell # Modify to your aishell data path
++stage=4  # Modify to control start from witch stage
+ # --
+ 
+ ngpu=1         # number of gpus ("0" uses cpu, otherwise use gpu)
+@@ -60,6 +60,7 @@ tag="" # tag for managing experiments.
+ . ./cmd.sh
+ . ./path.sh
+ 
++# 准备输入文件，主要为test wav.scp utt2spk spk2utt
+ if [ $stage -le 0 ]; then
+     echo "Stage 0: Data Preparation"
+     ### Task dependent. You have to make data the following preparation part by yourself.
+@@ -81,12 +82,14 @@ if [ $stage -le 1 ]; then
+     echo "Stage 1: Feature Generation"
+     ### Task dependent. You have to make data the following preparation part by yourself.
+     ### But you can utilize Kaldi recipes in most cases
++    # 计算fbank
+     fbankdir=fbank
+     for data in train test dev; do
+         steps/make_fbank.sh --cmd "$train_cmd" --nj $nj --write_utt2num_frames true \
+             data/$data exp/make_fbank/$data $fbankdir/$data || exit 1;
+     done
+     # compute global CMVN
++    # 计算倒谱均值和方差
+     compute-cmvn-stats scp:data/train/feats.scp data/train/cmvn.ark
+     # dump features for training
+     for data in train test dev; do
+diff --git a/src/bin/recognize.py b/src/bin/recognize.py
+index e138da5..1715cd7 100755
+--- a/src/bin/recognize.py
++++ b/src/bin/recognize.py
+@@ -48,8 +48,7 @@ def recognize(args):
+     new_js = {}
+     with torch.no_grad():
+         for idx, name in enumerate(js.keys(), 1):
+-            print('(%d/%d) decoding %s' %
+-                  (idx, len(js.keys()), name), flush=True)
++            print('(%d/%d) decoding %s' % (idx, len(js.keys()), name))
+             input = kaldi_io.read_mat(js[name]['input'][0]['feat'])  # TxD
+             input = torch.from_numpy(input).float()
+             input_length = torch.tensor([input.size(0)], dtype=torch.int)
+@@ -65,5 +64,5 @@ def recognize(args):
+ 
+ if __name__ == "__main__":
+     args = parser.parse_args()
+-    print(args, flush=True)
++    print(args)
+     recognize(args)
+diff --git a/src/bin/train.py b/src/bin/train.py
+index c4ee622..ba7a1f6 100755
+--- a/src/bin/train.py
++++ b/src/bin/train.py
+@@ -66,7 +66,7 @@ parser.add_argument('--maxlen_in', default=800, type=int, metavar='ML',
+                     help='Batch size is reduced if the input sequence length > ML')
+ parser.add_argument('--maxlen_out', default=150, type=int, metavar='ML',
+                     help='Batch size is reduced if the output sequence length > ML')
+-parser.add_argument('--num_workers', default=4, type=int,
++parser.add_argument('--num_workers', default=0, type=int,
+                     help='Number of workers to generate minibatch')
+ # optimizer
+ parser.add_argument('--optimizer', default='adam', type=str,
+diff --git a/src/data/data.py b/src/data/data.py
+index 1ffdde3..4c67adb 100644
+--- a/src/data/data.py
++++ b/src/data/data.py
+@@ -1,3 +1,4 @@
++# -*- coding: utf-8 -*-
+ """
+ Logic:
+ 1. AudioDataLoader generate a minibatch from AudioDataset, the size of this
+@@ -33,6 +34,7 @@ class AudioDataset(data.Dataset):
+             num_batches: for debug. only use num_batches minibatch but not all.
+         """
+         super(AudioDataset, self).__init__()
++        # print(batch_size) # 32
+         with open(data_json_path, 'rb') as f:
+             data = json.load(f)['utts']
+         # sort it by input lengths (long to short)
+@@ -41,6 +43,7 @@ class AudioDataset(data.Dataset):
+         # change batchsize depending on the input and output length
+         minibatch = []
+         start = 0
++        # print(sorted_data[start]) # ('BAC009S0658W0472', {'utt2spk':'S0658', 'input':[...]})
+         while True:
+             ilen = int(sorted_data[start][1]['input'][0]['shape'][0])
+             olen = int(sorted_data[start][1]['output'][0]['shape'][0])
+@@ -87,18 +90,23 @@ def _collate_fn(batch):
+     """
+     # batch should be located in list
+     assert len(batch) == 1
++    # print(batch)
+     batch = load_inputs_and_targets(batch[0])
+     xs, ys = batch
++    # print(len(xs), len(ys)) # (16, 16)
++    # print(xs[0].shape, ys[0].shape) # ((1451, 240), (23,))
+ 
+     # TODO: perform subsamping
+ 
+     # get batch of lengths of input sequences
+     ilens = np.array([x.shape[0] for x in xs])
+ 
+-    # perform padding and convert to tensor
++    # perform padding and convert to tensor 转成向量
+     xs_pad = pad_list([torch.from_numpy(x).float() for x in xs], 0)
++    # print('xs_pad shape: ', xs_pad.shape) # (16, 1451, 240)
+     ilens = torch.from_numpy(ilens)
+     ys_pad = pad_list([torch.from_numpy(y).long() for y in ys], IGNORE_ID)
++    # print('---- collate_fn ----')
+     return xs_pad, ilens, ys_pad
+ 
+ 
+@@ -108,13 +116,19 @@ def load_inputs_and_targets(batch):
+     # load acoustic features and target sequence of token ids
+     # for b in batch:
+     #     print(b[1]['input'][0]['feat'])
++    # feature list
+     xs = [kaldi_io.read_mat(b[1]['input'][0]['feat']) for b in batch]
++    # print(len(xs))
++    # label list
+     ys = [b[1]['output'][0]['tokenid'].split() for b in batch]
++    # print(len(ys))
+ 
+     # get index of non-zero length samples
+     nonzero_idx = filter(lambda i: len(ys[i]) > 0, range(len(xs)))
++    # print(nonzero_idx)
+     # sort in input lengths
+     nonzero_sorted_idx = sorted(nonzero_idx, key=lambda i: -len(xs[i]))
++    # print(nonzero_sorted_idx)
+     if len(nonzero_sorted_idx) != len(xs):
+         print("warning: Target sequences include empty tokenid")
+ 
+diff --git a/src/models/decoder.py b/src/models/decoder.py
+index 2928301..956582a 100644
+--- a/src/models/decoder.py
++++ b/src/models/decoder.py
+@@ -1,3 +1,4 @@
++# -*- coding: utf-8 -*-
+ import numpy as np
+ import torch
+ import torch.nn as nn
+@@ -40,6 +41,7 @@ class Decoder(nn.Module):
+             nn.Linear(self.hidden_size, self.vocab_size))
+ 
+     def zero_state(self, encoder_padded_outputs, H=None):
++        # print(encoder_padded_outputs.shape) # N * T * H (16, 1213, 512)
+         N = encoder_padded_outputs.size(0)
+         H = self.hidden_size if H == None else H
+         return encoder_padded_outputs.new_zeros(N, H)
+@@ -66,7 +68,7 @@ class Decoder(nn.Module):
+         # pys: utt x olen
+         ys_in_pad = pad_list(ys_in, self.eos_id)
+         ys_out_pad = pad_list(ys_out, IGNORE_ID)
+-        # print("ys_in_pad", ys_in_pad.size())
++        # print("ys_in_pad", ys_in_pad.size()) # (16, 29)
+         assert ys_in_pad.size() == ys_out_pad.size()
+         batch_size = ys_in_pad.size(0)
+         output_length = ys_in_pad.size(1)
+@@ -84,8 +86,10 @@ class Decoder(nn.Module):
+ 
+         # **********LAS: 1. decoder rnn 2. attention 3. concate and MLP
+         embedded = self.embedding(ys_in_pad)
++        # print(embedded.shape) # N * T * D (16, 30, 512)
+         for t in range(output_length):
+             # step 1. decoder RNN: s_i = RNN(s_i−1,y_i−1,c_i−1)
++            # embedded[:, t, :]为t时刻的y
+             rnn_input = torch.cat((embedded[:, t, :], att_c), dim=1)
+             h_list[0], c_list[0] = self.rnn[0](
+                 rnn_input, (h_list[0], c_list[0]))
+@@ -158,6 +162,7 @@ class Decoder(nn.Module):
+         Returns:
+             nbest_hyps:
+         """
++        # print(char_list)
+         # search params
+         beam = args.beam_size
+         nbest = args.nbest
+@@ -177,6 +182,7 @@ class Decoder(nn.Module):
+         # prepare sos
+         y = self.sos_id
+         vy = encoder_outputs.new_zeros(1).long()
++        # print(vy) # tensor([0], device='cuda:0')
+ 
+         hyp = {'score': 0.0, 'yseq': [y], 'c_prev': c_list, 'h_prev': h_list,
+                'a_prev': att_c}
+@@ -188,6 +194,7 @@ class Decoder(nn.Module):
+             for hyp in hyps:
+                 # vy.unsqueeze(1)
+                 vy[0] = hyp['yseq'][i]
++                # print('vy: ', vy[0]) # tensor(1026, device='cuda:0')
+                 embedded = self.embedding(vy)
+                 # embedded.unsqueeze(0)
+                 # step 1. decoder RNN: s_i = RNN(s_i−1,y_i−1,c_i−1)
+@@ -207,10 +214,12 @@ class Decoder(nn.Module):
+                 mlp_input = torch.cat((rnn_output, att_c), dim=1)
+                 predicted_y_t = self.mlp(mlp_input)
+                 local_scores = F.log_softmax(predicted_y_t, dim=1)
++                # print(local_scores.shape) # (1, 4233)
+                 # topk scores
+                 local_best_scores, local_best_ids = torch.topk(
+                     local_scores, beam, dim=1)
+ 
++                # print(len(hyp['yseq']))
+                 for j in range(beam):
+                     new_hyp = {}
+                     new_hyp['h_prev'] = h_list[:]
+@@ -229,6 +238,7 @@ class Decoder(nn.Module):
+                                         reverse=True)[:beam]
+             # end for hyp in hyps
+             hyps = hyps_best_kept
++            # print(len(hyps)) # 30 等于beam size
+ 
+             # add eos in the final loop to avoid that there are no ended hyps
+             if i == maxlen - 1:
+@@ -253,8 +263,7 @@ class Decoder(nn.Module):
+                 break
+ 
+             for hyp in hyps:
+-                print('hypo: ' + ''.join([char_list[int(x)]
+-                                          for x in hyp['yseq'][1:]]))
++                print('hypo: ' + ''.join([char_list[int(x)] for x in hyp['yseq'][1:]]).encode('utf-8').strip())
+         # end for i in range(maxlen)
+         nbest_hyps = sorted(ended_hyps, key=lambda x: x['score'], reverse=True)[
+             :min(len(ended_hyps), nbest)]
+diff --git a/src/models/encoder.py b/src/models/encoder.py
+index 2335b29..e02fe6c 100644
+--- a/src/models/encoder.py
++++ b/src/models/encoder.py
+@@ -15,6 +15,9 @@ class Encoder(nn.Module):
+         self.bidirectional = bidirectional
+         self.rnn_type = rnn_type
+         self.dropout = dropout
++        # print(self.input_size, self.hidden_size) # (240, 256)
++        # print(self.num_layers, self.bidirectional) # (3, 1)
++        # print(self.rnn_type, self.dropout) # ('lstm', 0.2)
+         if self.rnn_type == 'lstm':
+             self.rnn = nn.LSTM(input_size, hidden_size, num_layers,
+                                batch_first=True,
+@@ -33,13 +36,19 @@ class Encoder(nn.Module):
+         """
+         # Add total_length for supportting nn.DataParallel() later
+         # see https://pytorch.org/docs/stable/notes/faq.html#pack-rnn-unpack-with-data-parallelism
++        # print(padded_input.shape) # (16, 1451, 240)
++        # input_lengths: tensor([1451, 1396, 1335, 1305, 1301, 1275, 1268, 1261, 1254, 1252, 1239, 1238,
++        #         1230, 1230, 1217, 1214], device='cuda:0')
++        # print(input_lengths)
+         total_length = padded_input.size(1)  # get the max sequence length
+         packed_input = pack_padded_sequence(padded_input, input_lengths,
+                                             batch_first=True)
+         packed_output, hidden = self.rnn(packed_input)
++        # print(packed_output)
+         output, _ = pad_packed_sequence(packed_output,
+                                         batch_first=True,
+                                         total_length=total_length)
++        # print(output)
+         return output, hidden
+ 
+     def flatten_parameters(self):
+diff --git a/src/solver/solver.py b/src/solver/solver.py
+index 2735fa7..7ba8b83 100644
+--- a/src/solver/solver.py
++++ b/src/solver/solver.py
+@@ -55,7 +55,8 @@ class Solver(object):
+         else:
+             self.start_epoch = 0
+         # Create save folder
+-        os.makedirs(self.save_folder, exist_ok=True)
++        if not os.path.isdir(self.save_folder):
++            os.makedirs(self.save_folder)
+         self.prev_val_loss = float("inf")
+         self.best_val_loss = float("inf")
+         self.halving = False
+@@ -157,6 +158,7 @@ class Solver(object):
+             vis_iters_loss = torch.Tensor(len(data_loader))
+ 
+         for i, (data) in enumerate(data_loader):
++            # print(i, data[0].shape, data[1].shape) # (0, (16, 1451, 240), (16,))
+             padded_input, input_lengths, padded_target = data
+             padded_input = padded_input.cuda()
+             input_lengths = input_lengths.cuda()
+@@ -175,8 +177,7 @@ class Solver(object):
+                 print('Epoch {0} | Iter {1} | Average Loss {2:.3f} | '
+                       'Current Loss {3:.6f} | {4:.1f} ms/batch'.format(
+                           epoch + 1, i + 1, total_loss / (i + 1),
+-                          loss.item(), 1000 * (time.time() - start) / (i + 1)),
+-                      flush=True)
++                          loss.item(), 1000 * (time.time() - start) / (i + 1)))
+ 
+             # visualizing loss using visdom
+             if self.visdom and not cross_valid:
+diff --git a/src/utils/json2trn.py b/src/utils/json2trn.py
+index e63714c..cccaa37 100755
+--- a/src/utils/json2trn.py
++++ b/src/utils/json2trn.py
+@@ -42,12 +42,12 @@ if __name__ == '__main__':
+     for x in j['utts']:
+         seq = [char_list[int(i)] for i in j['utts'][x]
+                ['output'][0]['rec_tokenid'].split()]
+-        h.write(" ".join(seq).replace('<eos>', '')),
++        h.write(" ".join(seq).encode('utf-8').replace('<eos>', '')),
+         h.write(
+             " (" + j['utts'][x]['utt2spk'].replace('-', '_') + "-" + x + ")\n")
+ 
+         seq = [char_list[int(i)] for i in j['utts'][x]
+                ['output'][0]['tokenid'].split()]
+-        r.write(" ".join(seq).replace('<eos>', '')),
++        r.write(" ".join(seq).encode('utf-8').replace('<eos>', '')),
+         r.write(
+             " (" + j['utts'][x]['utt2spk'].replace('-', '_') + "-" + x + ")\n")
+diff --git a/src/utils/utils.py b/src/utils/utils.py
+index 424f122..5a87545 100644
+--- a/src/utils/utils.py
++++ b/src/utils/utils.py
+@@ -1,14 +1,26 @@
+ #!/usr/bin/env python3
++# -*- coding: utf-8 -*-
+ IGNORE_ID = -1
+ 
+ 
+ def pad_list(xs, pad_value):
++    # print('---- pad_list ----')
+     # From: espnet/src/nets/e2e_asr_th.py: pad_list()
+-    n_batch = len(xs)
++    # xs为list，每个元素为一个tensor
++    n_batch = len(xs) # 16
+     max_len = max(x.size(0) for x in xs)
++    # print('max_len: ', max_len) # 1451
++    # print("xs[0].shape: ", xs[0].shape)
++    # 使用pad_value填充新建的tensor
++    # print(xs[0].size()) # (1451, 240)
++    # print(xs[0].size()[1:]) # (240,)
+     pad = xs[0].new(n_batch, max_len, * xs[0].size()[1:]).fill_(pad_value)
++    # print(pad.shape) # (16, 1451, 240)
++    # print(pad[0].shape) # (1451, 240)
++    # 将batch中原来的数据拷贝到新的tensor中
+     for i in range(n_batch):
+         pad[i, :xs[i].size(0)] = xs[i]
++    # print(pad)
+     return pad
+ 
+ 
+@@ -88,7 +100,9 @@ def add_results_to_json(js, nbest_hyps, char_list):
+ 
+         # show 1-best result
+         if n == 1:
+-            print('groundtruth: %s' % out_dic['text'])
+-            print('prediction : %s' % out_dic['rec_text'])
++            text = out_dic['text']
++            rec_text = out_dic['rec_text']
++            print('groundtruth: %s' % text.encode(encoding='utf-8'))
++            print('prediction : %s' % rec_text.encode(encoding='utf-8'))
+ 
+     return new_js
+diff --git a/tools/Makefile b/tools/Makefile
+index 92f8b5e..bdff60d 100644
+--- a/tools/Makefile
++++ b/tools/Makefile
+@@ -1,4 +1,4 @@
+-KALDI =
++KALDI = /workspace/asr/kaldi
+ 
+ .PHONY: all clean
+ 
